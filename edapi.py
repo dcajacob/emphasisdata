@@ -4,6 +4,7 @@ import os, sys, socket
 from struct import *             # struct allows packing and unpacking for socket communication
 from time import sleep
 from datetime import datetime as dt
+import traceback
 
 import pandas as pd
 from pandas import Series, TimeSeries, DataFrame
@@ -39,35 +40,52 @@ def RecvAll(sock, size=280):
     return ''.join(total_data)
 
 def EmphasisGetInfoDict():
-    "return security_id based dictionary of all sid's"
+    """Return security_id based DataFrame of all sid's"""
 
     global sapi
 
     exchange = {0:'NASDAQ', 1:'NYSE', 2:'ASE', 6:'OTC'}
 
-    if sapi.send('\3')!=1:
+    # Request number of securities in database
+    if not sapi.send('\3'):
         print "send 3 error"
         CloseApi()
+
     ninfo = unpack('I',RecvAll(sapi, size=4))[0]
     print "%d possible security_id's" % ninfo
     Info = {}                               # empty dictionary
     sid = 0
-    if sapi.send('\4')!=1:
+
+    # Request the list of securities
+    if not sapi.send('\4'):
         print "send 4 error"
         CloseApi()
+
+    sids = []; tickers = []; ciks = []; sics = []; xchngs = []; names = []
+
     while sid!=9999999:
         info = RecvAll(sapi, size=280)
         if len(info) != 280:
             print "info recv error, only %d bytes" % len(info)
             CloseApi()
         sid,cik,sic,xchg,name,tkr = unpack('2I1i1I256s8s',info)
-        #print sid, tkr
         name = name.split("\0",1)[0]          # remove garbage after null byte
         tkr = tkr.split("\0",1)[0]
-        #Info[sid] = (tkr,cik,sic,xchg,name)   # add dictionary item
-        Info[sid] = {'ticker':tkr, 'cik':cik, 'sic':sic, 'exchange':exchange[xchg], 'company':name}   # add dictionary item
-    print "%d entries in security_id Info dictionary" % len(Info)
-    return Info
+        #Info[sid] = {'ticker':tkr, 'cik':cik, 'sic':sic, 'exchange':exchange[xchg], 'company':name}   # add dictionary item
+
+        sids.append(sid)
+        tickers.append(tkr)
+        ciks.append(cik)
+        sics.append(sic)
+        xchngs.append(exchange[xchg])
+        names.append(name)
+
+    #assert list(set(sid)) == sid # SID list should be unique
+    info = {'ticker':tickers, 'cik':ciks, 'sic':sics, 'exchange':xchngs, 'company':names}
+    universe = pd.DataFrame(info, index=sids)
+
+    print "%d entries in security_id Info dictionary" % len(universe)
+    return universe
 
 def EmphasisDataQuery(date,query):
     """return list of >0 query results as (security_id,value) tuples"""
@@ -165,7 +183,7 @@ def Query(query, date=GetLatestBusinessDay()):
             sids.append(int(sid))
             values.append(float(val))
 
-    result = Series(data=values, index=sids)
+    result = Series(data=values, index=pd.Index(sids, name='sid'))
     result.index.name = 'sid'
 
     return result
@@ -183,11 +201,12 @@ if __name__ == '__main__':
 
         sapi = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sapi.connect(('localhost', PORT))
-        sapi.settimeout(5.0)                # max 10 sec timeout so python doesn't hang
+        sapi.settimeout(5.0)    # max 10 sec timeout so python doesn't hang
 
-        if sapi.send('\1') != 1:               # check for valid connection
+        if not sapi.send('\1'): # check for valid connection
             print "send 1 error"
             CloseApi()
+
         ret = ord(sapi.recv(1)[0])
         if ret == 0:
             print "connected to API"
@@ -195,7 +214,7 @@ if __name__ == '__main__':
             print "connection error"
             CloseApi()
 
-        Info = EmphasisGetInfoDict()           # collect all the security_id Info at the start
+        Info = EmphasisGetInfoDict()    # collect all the security_id Info at the start
 
         while 1:  # loop to execute boolean queries
             s = raw_input("\nYYYYMMDD query (blank=exit): ").strip()
@@ -206,12 +225,16 @@ if __name__ == '__main__':
             if len(Result)==0:
                 print "  no results"
                 continue
-            for sid,val in Result:
-                if val:
-                    tkr,cik,sic,xchg,name = Info[sid]
-                    print "  %-6s %8d %s %s" % (tkr,cik,name,val)
+
+            sids, values = zip(*Result)
+            Results = pd.DataFrame({'values': values}, index=pd.Index(sids, name='sid'))
+            print Results.head()
+            #for sid,val in Result:
+            #    if val:
+            #        #tkr,cik,sic,xchg,name = Info[sid]
+            #        print "  %-6s %8d %s %s" % (Info.xs(sid)['ticker'],int(Info.xs(sid)['cik']),Info.xs(sid)['company'],str(val))
     except KeyboardInterrupt:
         sapi.close()
     except Exception as e:
         sapi.close()
-        raise(e)
+        print(traceback.format_exc())
