@@ -1,4 +1,4 @@
-# 11/22/11 demonstrate emphasisdata.com API commmunication
+    # 11/22/11 demonstrate emphasisdata.com API commmunication
 
 import os, sys, socket
 from struct import *             # struct allows packing and unpacking for socket communication
@@ -9,184 +9,172 @@ import traceback
 import pandas as pd
 from pandas import Series, TimeSeries, DataFrame
 
-sapi = None
+class EmphasisData(object):
 
-def CloseApi():
+    sapi = None
+    timeout = 5.0
 
-    global sapi
+    def __init__(self, host='localhost', port=7729):
+        """Create an instance of a Prologix GPIB Ethernet Widget
+        """
 
-    sapi.close()
-    print "Oops!"
-    sys.exit()
+        self._address = None
 
-def RecvAll(sock, size=280):
+        self.host = host
+        self.port = port
+        self._isOpen = False
 
-    global sapi
+    def connect(self):
+        """Create a connection to a Prologix GPIB Ethernet Widget
+        """
 
-    total_len=0
-    total_data=[]
+        # Open TCP connection to GPIB-ETHERNET
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect((self.host, self.port))
 
-    size_data=sock_data=''
-    recv_size=len
+        if self.sock.send('\1') != 1:               # check for valid connection
+            print "send 1 error"
+            self.close()
+        ret = ord(self.sock.recv(1)[0])
+        if ret == 0:
+            print "connected to API"
+        else:
+            print "connection error"
+            self.close()
 
-    while total_len<size:
-        sock_data=sock.recv(size, socket.MSG_WAITALL)
-        if not len(total_data):
-            if len(sock_data) > 0:
-                recv_size = size - len(sock_data)
-                total_len = total_len + len(sock_data)
-                total_data.append(sock_data)
-            sleep(0.00001)
-    return ''.join(total_data)
+        self._isOpen = True
 
-def EmphasisGetInfoDict():
-    """Return security_id based DataFrame of all sid's"""
+    def close(self):
+        """Close the connection to the Prologix GPIB Ethernet Widget
+        """
 
-    global sapi
+        self.sock.close()
+        self._isOpen = False
 
-    exchange = {0:'NASDAQ', 1:'NYSE', 2:'ASE', 6:'OTC'}
+    def RecvAll(self, size=280):
 
-    # Request number of securities in database
-    if not sapi.send('\3'):
-        print "send 3 error"
-        CloseApi()
+        total_len = 0
+        total_data = []
 
-    ninfo = unpack('I',RecvAll(sapi, size=4))[0]
-    print "%d possible security_id's" % ninfo
-    Info = {}                               # empty dictionary
-    sid = 0
+        size_data = sock_data = ''
+        recv_size = len
 
-    # Request the list of securities
-    if not sapi.send('\4'):
-        print "send 4 error"
-        CloseApi()
+        while total_len < size:
+            sock_data = self.sock.recv(size, socket.MSG_WAITALL)
+            if not len(total_data):
+                if len(sock_data) > 0:
+                    recv_size = size - len(sock_data)
+                    total_len = total_len + len(sock_data)
+                    total_data.append(sock_data)
+                sleep(0.00001)
+        return ''.join(total_data)
 
-    sids = []; tickers = []; ciks = []; sics = []; xchngs = []; names = []
+    def getSecurities(self):
+        """Return security_id based DataFrame of all sid's"""
 
-    while sid!=9999999:
-        info = RecvAll(sapi, size=280)
-        if len(info) != 280:
-            print "info recv error, only %d bytes" % len(info)
-            CloseApi()
-        sid,cik,sic,xchg,name,tkr = unpack('2I1i1I256s8s',info)
-        name = name.split("\0",1)[0]          # remove garbage after null byte
-        tkr = tkr.split("\0",1)[0]
-        #Info[sid] = {'ticker':tkr, 'cik':cik, 'sic':sic, 'exchange':exchange[xchg], 'company':name}   # add dictionary item
+        exchange = {0:'NASDAQ', 1:'NYSE', 2:'ASE', 6:'OTC'}
 
-        sids.append(sid)
-        tickers.append(tkr)
-        ciks.append(cik)
-        sics.append(sic)
-        xchngs.append(exchange[xchg])
-        names.append(name)
+        # Request number of securities in database
+        if not self.sock.send('\3'):
+            print "send 3 error"
+            self.close()
+            return False
 
-    #assert list(set(sid)) == sid # SID list should be unique
-    info = {'ticker':tickers, 'cik':ciks, 'sic':sics, 'exchange':xchngs, 'company':names}
-    universe = pd.DataFrame(info, index=sids)
+        ninfo = unpack('I',self.RecvAll(size=4))[0]
+        print "%d possible security_id's" % ninfo
+        Info = {}                               # empty dictionary
+        sid = 0
 
-    print "%d entries in security_id Info dictionary" % len(universe)
-    return universe
+        # Request the list of securities
+        if not self.sock.send('\4'):
+            print "send 4 error"
+            self.close()
+            return False
 
-def EmphasisDataQuery(date,query):
-    """return list of >0 query results as (security_id,value) tuples"""
+        sids = []; tickers = []; ciks = []; sics = []; xchngs = []; names = []
 
-    global sapi
+        while sid != 9999999:
+            info = self.RecvAll(size=280)
+            if len(info) != 280:
+                print "info recv error, only %d bytes" % len(info)
+                self.close()
+                return False
 
-    nq = len(query)
-    packfmt = '=BII%ds' % nq
-    qapi = pack(packfmt,2,nq,date,query)
-    if sapi.send(qapi)!=len(qapi):       # send the query
-        print "send query api error"
-        CloseApi()
-    Result = []                          # empty list
-    ACK = ord(sapi.recv(1)[0])           # receive ACK byte
-    if ACK!=0:
-        print "query error"
+            sid,cik,sic,xchg,name,tkr = unpack('2I1i1I256s8s',info)
+            name = name.split("\0",1)[0]          # remove garbage after null byte
+            tkr = tkr.split("\0",1)[0]
+            #Info[sid] = {'ticker':tkr, 'cik':cik, 'sic':sic, 'exchange':exchange[xchg], 'company':name}   # add dictionary item
+
+            sids.append(sid)
+            tickers.append(tkr)
+            ciks.append(cik)
+            sics.append(sic)
+            xchngs.append(exchange[xchg])
+            names.append(name)
+
+        #assert list(set(sid)) == sid # SID list should be unique
+        info = {'ticker':tickers, 'cik':ciks, 'sic':sics, 'exchange':xchngs, 'company':names}
+        universe = pd.DataFrame(info, index=sids)
+
+        print "%d entries in security_id Info dictionary" % len(universe)
+        return universe
+
+    def DataQuery(self, date, query):
+        """return list of >0 query results as (security_id,value) tuples"""
+
+        nq = len(query)
+        packfmt = '=BII%ds' % nq
+        qapi = pack(packfmt, 2, nq,date, query)
+        if self.sock.send(qapi) != len(qapi):       # send the query
+            print "send query api error"
+            self.close()
+            return False
+
+        Result = []                          # empty list
+        ACK = ord(self.sock.recv(1)[0])           # receive ACK byte
+        if ACK != 0:
+            print "query error"
+            return Result
+        nret = unpack('I', self.sock.recv(4))[0]   # this is the number of results we'll receive
+        for k in range(nret):                # each result is a (security_id,value) tuple
+            Result.append(unpack('If', self.sock.recv(8)))
+
         return Result
-    nret = unpack('I',sapi.recv(4))[0]   # this is the number of results we'll receive
-    for k in range(nret):                # each result is a (security_id,value) tuple
-        Result.append(unpack('If',sapi.recv(8)))
-    return Result
 
-def Connect(host='localhost', port=7729, timeout=5.0):
-    """"""
+    def GetLatestBusinessDay(self):
 
-    global sapi
+        lastbday = pd.bdate_range(start=dt.now() - pd.DateOffset(months=1), end=dt.now())[-1]
+        return lastbday
 
-    sapi = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sapi.connect((host, port))
-    sapi.settimeout(timeout)                # max 10 sec timeout so python doesn't hang
+    def Query(self, query, date=None):
+        """"""
 
-    if sapi.send('\1') != 1:               # check for valid connection
-        print "send 1 error"
-        CloseApi()
-    ret = ord(sapi.recv(1)[0])
-    if ret == 0:
-        print "connected to API"
-    else:
-        print "connection error"
-        CloseApi()
+        sids = []
+        values = []
 
-def GetTickers():
-    """"""
+        if date is None:
+            date = self.GetLatestBusinessDay()
 
-    sids = []
-    tickers = []
-    ciks = []
-    sics = []
-    xchgs = []
-    names = []
+        print type(date), date
 
-    info = EmphasisGetInfoDict()           # collect all the security_id Info at the start
+        date = date.strftime('%Y%m%d')
 
-    info.pop(9999999) # Remove the end of query indicator
+        result = self.DataQuery(int(date), query)
 
-    #for sid in info:
-    #    tkr, cik, sic, xchg, name = info[sid]
+        if len(result) == 0:
+            print "No results"
 
-    #    sids.append(sid)
-    #    tickers.append(tkr)
-    #    ciks.append(cik)
-    #    sics.append(sic)
-    #    xchgs.append(xchg)
-    #    names.append(name)
+        for sid, val in result:
+            if val:
+                #tkr,cik,sic,xchg,name = Info[sid]
+                sids.append(int(sid))
+                values.append(float(val))
 
-    tickers = DataFrame.from_dict(data=info, orient='index')#, columns=['ticker','cik','sic','exchange','name'])
-    tickers.index.name = 'sid'
+        result = Series(data=values, index=pd.Index(sids, name='sid'))
+        result.index.name = 'sid'
 
-    return tickers
-
-def GetLatestBusinessDay():
-
-    lastbday = pd.bdate_range(start=dt.now() - pd.DateOffset(months=1),
-                            end=dt.now())[-1]
-    return lastbday
-
-def Query(query, date=GetLatestBusinessDay()):
-    """"""
-
-    sids = []
-    values = []
-
-    date = date.strftime('%Y%m%d')
-
-    print date, query
-
-    result = EmphasisDataQuery(int(date),query)
-
-    if len(result)==0:
-        print "No results"
-
-    for sid, val in result:
-        if val:
-            #tkr,cik,sic,xchg,name = Info[sid]
-            sids.append(int(sid))
-            values.append(float(val))
-
-    result = Series(data=values, index=pd.Index(sids, name='sid'))
-    result.index.name = 'sid'
-
-    return result
+        return result
 
 if __name__ == '__main__':
 
