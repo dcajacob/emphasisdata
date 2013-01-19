@@ -31,6 +31,7 @@ class EmphasisData(object):
         # Open TCP connection to GPIB-ETHERNET
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
         self.sock.settimeout(self.timeout)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.connect((self.host, self.port))
 
         if self.sock.send('\1') != 1:               # check for valid connection
@@ -155,8 +156,6 @@ class EmphasisData(object):
 
         if date is None:
             date = self.GetLatestBusinessDay()
-
-        print type(date), date
 
         date = date.strftime('%Y%m%d')
 
